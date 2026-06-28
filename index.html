@@ -266,9 +266,9 @@ function f(path,val){
   const keys=path.split('.');
   let obj=p;
   for(let i=0;i<keys.length-1;i++) obj=obj[keys[i]];
-  if(val===undefined) return obj[keys[keys.length-1]];
+  if(val===undefined) return obj[keys[keys.length-1]]; // lecture seule — PAS de save
   obj[keys[keys.length-1]]=val;
-  saveData();
+  saveData(); // save uniquement en écriture
   return val;
 }
 
@@ -676,7 +676,7 @@ function renderTab4(){
 function render(){
   const renders=[renderTab0,renderTab1,renderTab2,renderTab3,renderTab4,renderTab5];
   document.getElementById('mainContent').innerHTML=renders[curTab]();
-  saveData();
+  // NE PAS appeler saveData ici
 }
 
 // ── Supabase config ─────────────────────────────────────────
@@ -709,6 +709,7 @@ async function syncToCloud(){
 
 async function loadFromCloud(){
   try{
+    showSyncStatus('⟳ sync…', 'rgba(255,255,255,.5)');
     const res = await fetch(`${SUPA_URL}/rest/v1/garde?id=eq.${GARDE_ID}&select=data,updated_at`, {
       headers: {
         'apikey': SUPA_KEY,
@@ -718,22 +719,29 @@ async function loadFromCloud(){
     const rows = await res.json();
     if(rows && rows.length > 0 && rows[0].data){
       const cloud = rows[0].data;
-      // Comparer avec localStorage pour prendre le plus récent
       const localTs = parseInt(localStorage.getItem('rea_ts')||'0');
       const cloudTs = new Date(rows[0].updated_at).getTime();
       if(cloudTs > localTs){
+        // Cloud plus récent — on charge sans déclencher saveData
         pats = (cloud.pats||[]).map(lp => Object.assign(defaultPat(), lp));
         globalNotes = cloud.globalNotes || '';
-        saveData();
+        // Sauvegarder en local seulement (sans re-sync cloud)
+        try{
+          localStorage.setItem('rea_pats', JSON.stringify(pats));
+          localStorage.setItem('rea_globalNotes', globalNotes);
+          localStorage.setItem('rea_ts', cloudTs.toString());
+        } catch(e){}
         buildPatStrip();
         render();
-        showSyncStatus('✓ Synchronisé', '#0e7c5a');
+        showSyncStatus('✓ Synchronisé', '#6ee7b7');
       } else {
-        showSyncStatus('✓ À jour', '#0e7c5a');
+        showSyncStatus('✓ À jour', '#6ee7b7');
       }
+    } else {
+      showSyncStatus('✓ Connecté', '#6ee7b7');
     }
   } catch(e){
-    showSyncStatus('⚠ Hors ligne', '#b45309');
+    showSyncStatus('⚠ Hors ligne', '#fbbf24');
   }
 }
 
@@ -750,34 +758,40 @@ function saveData(){
     localStorage.setItem('rea_pats', JSON.stringify(pats));
     localStorage.setItem('rea_globalNotes', globalNotes);
     localStorage.setItem('rea_ts', Date.now().toString());
-  } catch(e){}
+    showSyncStatus('💾 Local…', 'rgba(255,255,255,.5)');
+  } catch(e){ console.error('saveData error',e); }
   clearTimeout(saveData._t);
-  saveData._t = setTimeout(syncToCloud, 2000);
+  saveData._t = setTimeout(syncToCloud, 2500);
 }
 
 function loadData(){
   try{
     const saved = localStorage.getItem('rea_pats');
-    if(saved){
+    if(saved && saved !== 'undefined'){
       const loaded = JSON.parse(saved);
-      // Fusionner avec defaultPat pour ne pas perdre de nouveaux champs
-      pats = loaded.map(lp => Object.assign(defaultPat(), lp));
+      if(Array.isArray(loaded) && loaded.length > 0){
+        pats = loaded.map(lp => Object.assign(defaultPat(), lp));
+      }
     }
     const notes = localStorage.getItem('rea_globalNotes');
     if(notes) globalNotes = notes;
-  } catch(e){}
+  } catch(e){ console.error('loadData error',e); }
 }
 
-// Sauvegarder aussi quand on quitte la page
+// Sauvegarder quand on quitte/minimise
 window.addEventListener('beforeunload', saveData);
 window.addEventListener('pagehide', saveData);
-window.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden') saveData(); });
+window.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='hidden') saveData();
+  if(document.visibilityState==='visible') loadFromCloud();
+});
 
-loadData();
-buildPatStrip();
-render();
-// Charger depuis le cloud au démarrage
-loadFromCloud();
+// ── Init ─────────────────────────────────────────────────────
+loadData();       // 1. charger localStorage
+buildPatStrip();  // 2. afficher strip patients
+render();         // 3. afficher interface
+loadFromCloud();  // 4. vérifier si cloud plus récent (async, n'écrase que si plus récent)
+
 
 // ── Export PDF ──────────────────────────────────────────────
 function exportPDF(){
